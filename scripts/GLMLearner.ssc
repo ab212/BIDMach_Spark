@@ -7,6 +7,7 @@ import BIDMat.MatFunctions._
 import BIDMat.SciFunctions._
 import BIDMat.Solvers._
 import BIDMach.RunOnSpark._
+import BIDMach.RunOnSparkGLM._
 import BIDMach.Learner
 import BIDMach.models.GLM
 import org.apache.hadoop.io.Text
@@ -16,11 +17,12 @@ import org.apache.spark.storage.StorageLevel
 // Specify IP address of master here
 val MASTER_DNS = java.net.InetAddress.getLocalHost.getHostAddress
 val num_executors = 2
+
 val rdd_data = sc.sequenceFile(
-    "hdfs://%s:9000/BIDMach_MNIST/glm_data_merged_200.lz4".format(MASTER_DNS),
-    classOf[Text],
-    classOf[BIDMat.MatIO]
-).partitionBy(new HashPartitioner(num_executors)).persist()
+   "hdfs://%s:9000/BIDMach_MNIST/glm_data_merged_100.lz4".format(MASTER_DNS),
+   classOf[Text],
+   classOf[BIDMat.MatIO]
+).partitionBy(new HashPartitioner(num_executors)).persist(StorageLevel.MEMORY_AND_DISK)
 
 val (learner, opts) = GLM.learner()
 opts.useGPU = true;
@@ -30,7 +32,7 @@ opts.targets = mkdiag(ones(10,1)) \ zeros(10, 784);
 opts.rmask = zeros(1,10) \ ones(1, 784);
 
 opts.batchSize = 500;
-opts.npasses = 1;
+opts.npasses = 5;
 opts.lrate = 0.001;  // for logistic
 
 def time[R](block: => R): R = {
@@ -40,15 +42,16 @@ def time[R](block: => R): R = {
     println("Elapsed time: " + (t1 - t0)/math.pow(10, 9)+ "s")
     result
 }
-val result = time {runOnSpark(sc, learner, rdd_data, num_executors)}
+val result = time {runOnSparkGLM(sc, learner, rdd_data, num_executors)}
 
-println("done training")
-
-val randPartNum = scala.util.Random.nextInt(80)
-
-var test = loadFMat("/opt/BIDMach/data/MNIST8M/parts/data%02d.fmat.lz4" format randPartNum)
-val tcats = loadFMat("/opt/BIDMach/data/MNIST8M/parts/cats%02d.fmat.lz4" format randPartNum)
-val tcat = maxi2(tcats, 1)._2
+//
+//println("done training")
+//
+//val randPartNum = scala.util.Random.nextInt(80)
+//
+//var test = loadFMat("/opt/BIDMach/data/MNIST8M/parts/data%02d.fmat.lz4" format randPartNum)
+//val tcats = loadFMat("/opt/BIDMach/data/MNIST8M/parts/cats%02d.fmat.lz4" format randPartNum)
+//val tcat = maxi2(tcats, 1)._2
 
 // val pmodel = new GLM(new GLM.PredOptions());
 // pmodel.copyFrom(nn.model);
