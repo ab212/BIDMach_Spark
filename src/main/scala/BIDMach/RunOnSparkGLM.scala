@@ -50,7 +50,7 @@ object RunOnSparkGLM {
 
     m.init
 
-    val rddLearnerWorker:RDD[(Learner, Worker)] = rddData.mapPartitionsWithIndex(
+    val rddWorkerLearner:RDD[(Worker, Learner)] = rddData.mapPartitionsWithIndex(
       (idx:Int, data_iter:Iterator[(Text, BIDMat.MatIO)]) => {
         import BIDMat.{CMat,CSMat,DMat,Dict,FMat,FND,GMat,GDMat,GIMat,GLMat,GSMat,GSDMat,GND,HMat,IDict,Image,IMat,LMat,Mat,SMat,SBMat,SDMat}
         import BIDMat.MatFunctions._
@@ -83,23 +83,14 @@ object RunOnSparkGLM {
         opts.responseSocketNum = cmdPort + 1;
         opts.peerSocketNum = cmdPort + 2;
 
-        println("-------------------------------")
-        println("worker init: " + worker)
-        println("-------------------------------")
-
-        Iterator[(Learner, Worker)]((learner, worker))
+        Iterator[(Worker, Learner)]((worker, learner))
       },
       preservesPartitioning=true
     ).persist()
 
-    val workerAddrs:Array[InetSocketAddress] = rddLearnerWorker.mapPartitions((iter:Iterator[(Learner, Worker)]) => {
-      val (learner, worker) = iter.next
-
+    val workerAddrs:Array[InetSocketAddress] = rddWorkerLearner.mapPartitions((iter:Iterator[(Worker, Learner)]) => {
+      val (worker, learner) = iter.next
       worker.start(learner)
-
-      println("-------------------------------")
-      println("worker start: " + worker)
-      println("-------------------------------")
 
       Iterator[InetSocketAddress](
         new InetSocketAddress(worker.workerIP.getHostAddress, worker.opts.commandSocketNum))
@@ -113,22 +104,17 @@ object RunOnSparkGLM {
     m.sendConfig
     m.setMachineNumbers // BUG: need to send this twice for it to work
 
-    rddData.zipPartitions(rddLearnerWorker, preservesPartitioning=true)(
-      (data_iter:Iterator[(Text, BIDMat.MatIO)], lw_iter:Iterator[(Learner, Worker)]) => {
-        val (_, worker) = lw_iter.next
-        val learner = worker.learner
+    val rddLearner:RDD[Learner] = rddWorkerLearner.values
 
-        println("-------------------------------")
-        println("worker first: " + worker)
-        println("-------------------------------")
+    rddData.zipPartitions(rddLearner, preservesPartitioning=true)(
+      (data_iter:Iterator[(Text, BIDMat.MatIO)], learn_iter:Iterator[Learner]) => {
+        val learner = learn_iter.next
 
         learner.datasource.asInstanceOf[IteratorSource].opts.iter = data_iter
         learner.datasource.init
         learner.model.bind(learner.datasource)
 
-        learner.model.refresh = true
         learner.init
-
         learner.firstPass(null)
 
         learner.datasource.close
@@ -146,13 +132,9 @@ object RunOnSparkGLM {
       // Call nextPass on each learner and reduce the learners into one learner
       val t0 = System.nanoTime()
 
-      rddData.zipPartitions(rddLearnerWorker, preservesPartitioning=true)(
-        (data_iter:Iterator[(Text, BIDMat.MatIO)], lw_iter:Iterator[(Learner, Worker)]) => {
-          val (_, worker) = lw_iter.next
-          val learner = worker.learner
-          println("-------------------------------")
-          println("worker next: " + worker)
-          println("-------------------------------")
+      rddData.zipPartitions(rddLearner, preservesPartitioning=true)(
+        (data_iter:Iterator[(Text, BIDMat.MatIO)], learn_iter:Iterator[Learner]) => {
+          val learner = learn_iter.next
 
           learner.datasource.asInstanceOf[IteratorSource].opts.iter = data_iter
           learner.datasource.init
@@ -174,9 +156,7 @@ object RunOnSparkGLM {
       println("Elapsed time iter " + iter + ": " + (t1 - t0)/math.pow(10, 9)+ "s")
     }
 
-    rddLearnerWorker.mapPartitions((lw_iter:Iterator[(Learner, Worker)]) => {
-      val (_, worker) = lw_iter.next
-      Iterator[Learner](worker.learner)
-    }, preservesPartitioning=true).collect()
+    rddLearner.foreachPartition((iter:Iterator[Learner]) => iter.next.wrapUp(protoLearner.opts.npasses - 1))
+    rddLearner.collect()
   }
 }
